@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+import base64
 import urllib.request
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor
@@ -108,13 +109,15 @@ def load_session():
     return
 
 
-def fetch(url, ua=None, referer=None):
+def fetch(url, ua=None, referer=None, data=None):
     opener = get_opener()
     for try_ua in ([ua] if ua else UA_ROTATION):
         headers = {"User-Agent": try_ua}
         if referer:
             headers["Referer"] = referer
-        req = urllib.request.Request(url, headers=headers)
+        if data is not None:
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+        req = urllib.request.Request(url, headers=headers, data=data.encode() if isinstance(data, str) else data)
         last_err = None
         for attempt in range(RETRY_COUNT + 1):
             try:
@@ -394,6 +397,43 @@ def try_shortener_solve(url, depth=0):
     return solve_earnlinks(url, body, UA_ROTATION[1], depth)
 
 
+SAFELINK_RE = re.compile(r'name="newwpsafelink" value="([^"]+)"')
+LANDING_FORM_RE = re.compile(r'<form[^>]*id="landing"[^>]*action="([^"]+)"[\s\S]*?name="go" value="([^"]+)"', re.I)
+SECOND_SAFELINK_RE = re.compile(r'"second_safelink_url"\s*:\s*"([^"]+)"')
+SAFELINK_REDIRECT_RE = re.compile(r'safelink_redirect=([A-Za-z0-9_\-%./=]+)')
+
+
+def extract_safelink_next(body):
+    m = SAFELINK_RE.search(body)
+    if not m:
+        return None
+    try:
+        data = json.loads(base64.b64decode(m.group(1) + "=="))
+    except Exception:
+        return None
+    linkr = data.get("linkr", "") or ""
+    m2 = SAFELINK_REDIRECT_RE.search(linkr)
+    if not m2:
+        return None
+    try:
+        dec = json.loads(base64.b64decode(urllib.parse.unquote(m2.group(1)) + "=="))
+    except Exception:
+        return None
+    return dec.get("second_safelink_url") or None
+
+
+def follow_landing_form(body, url, mobile_ua):
+    m = LANDING_FORM_RE.search(body)
+    if not m:
+        return None
+    action, go = m.group(1), m.group(2)
+    try:
+        resp = fetch(action, ua=mobile_ua, referer=url, data="go=" + urllib.parse.quote(go, safe=""))
+        return resp.read(262144).decode("utf-8", errors="replace")
+    except (urllib.error.URLError, TimeoutError, OSError, urllib.error.HTTPError):
+        return None
+
+
 def resolve(entry_url):
     chain = []
     seen = set()
@@ -467,6 +507,24 @@ def resolve(entry_url):
             current = target
             reason = "page"
             continue
+        if "new wpsafelink" in body.lower() or "new_wpsafelink" in body.lower() or 'name="newwpsafelink"' in body:
+            nxt = extract_safelink_next(body)
+            if nxt:
+                log("safelink chain hop: {}".format(nxt))
+                chain.append((current, "safelink"))
+                current = nxt
+                reason = "page"
+                continue
+        if 'id="landing"' in body and "form" in body.lower():
+            gate_body = follow_landing_form(body, current, UA_ROTATION[0])
+            if gate_body:
+                log("adlinkfly landing form followed ({} bytes)".format(len(gate_body)))
+                nxt = extract_safelink_next(gate_body)
+                if nxt:
+                    chain.append((current, "safelink"))
+                    current = nxt
+                    reason = "page"
+                    continue
         chain.append((current, "final"))
         return chain, "ok", mediafire_links
     return chain, "hop limit reached", mediafire_links
