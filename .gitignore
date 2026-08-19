@@ -1,0 +1,7 @@
+.vlink-bot.env
+.vlink-session.json
+vlink-bot.log
+vlink-bot.log.1
+__pycache__/
+*.pyc
+.env
