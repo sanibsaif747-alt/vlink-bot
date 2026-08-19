@@ -481,6 +481,14 @@ def send_message(chat_id, text):
 
 
 def build_reply(entry_url, chain, status, mediafire_links):
+    host = urlparse(entry_url).netloc
+    if status == "shortener gate failed" and "vplink" in host:
+        return (
+            "Link gate: could not open\n\n" + entry_url + "\n\n"
+            "Ye link Cloudflare Turnstile (CAPTCHA) + article-rotation gate par hai — "
+            "bot automate nahi kar sakta, ye sites aise hi banti hain (ads se paisa kamati hain). "
+            "Isse manually browser mein kholna padega ya koi fresh/linksgo wala link bhejo."
+        )
     if status == "earnlinks gate failed":
         return (
             "Link gate: could not open\n\n" + entry_url + "\n\n"
@@ -527,13 +535,13 @@ def build_reply(entry_url, chain, status, mediafire_links):
     return "\n".join(lines)
 
 
-def browser_mode(url, wait=15):
+def browser_mode(url, wait=15, timeout=420):
     try:
         proc = subprocess.run(
             [sys.executable, "/root/chain_walker.py", url, str(wait)],
             capture_output=True,
             text=True,
-            timeout=420,
+            timeout=timeout,
         )
         out = proc.stdout
         for line in out.splitlines():
@@ -567,12 +575,17 @@ def handle_message(chat_id, text):
     chain, status, file_links = resolve_safe(urls[0])
     if not file_links:
         host = urlparse(urls[0]).netloc
-        api_shortener = any(h in host for h in ("linksgo.in", "earnlinks.in", "vplink.in"))
+        api_shortener = any(h in host for h in ("linksgo.in", "earnlinks.in"))
         if api_shortener:
             log("api shortener {} failed (spent/blocked): {}".format(host, status))
         else:
-            send_message(chat_id, "Fast scan clean — browser mode on, loops ka wait hoga (10-60 sec)")
-            file_links = browser_mode(urls[0])
+            log("fast scan clean for {} — browser mode on".format(host))
+            if "vplink" in host:
+                send_message(chat_id, "Opening in browser… vplink ad-gate hai, isme 1-2 min lag sakte hain")
+                file_links = browser_mode(urls[0], timeout=120)
+            else:
+                send_message(chat_id, "Fast scan clean — browser mode on, loops ka wait hoga (10-60 sec)")
+                file_links = browser_mode(urls[0])
             if file_links:
                 chain, status = [(urls[0], "fast")], "mediafire"
     reply = build_reply(urls[0], chain, status, file_links)
