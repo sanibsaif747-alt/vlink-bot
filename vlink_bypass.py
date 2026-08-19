@@ -109,7 +109,7 @@ def load_session():
     return
 
 
-def fetch(url, ua=None, referer=None, data=None):
+def fetch(url, ua=None, referer=None, data=None, xrh=False):
     opener = get_opener()
     for try_ua in ([ua] if ua else UA_ROTATION):
         headers = {"User-Agent": try_ua}
@@ -117,6 +117,8 @@ def fetch(url, ua=None, referer=None, data=None):
             headers["Referer"] = referer
         if data is not None:
             headers["Content-Type"] = "application/x-www-form-urlencoded"
+        if xrh:
+            headers["X-Requested-With"] = "XMLHttpRequest"
         req = urllib.request.Request(url, headers=headers, data=data.encode() if isinstance(data, str) else data)
         last_err = None
         for attempt in range(RETRY_COUNT + 1):
@@ -427,8 +429,35 @@ def extract_safelink_next(body):
     return out or None
 
 
-CAPTCHA_WALL_RE = re.compile(r'ad_form_data|_csrfToken|/links/go|captcha_namespace', re.I)
-SAFELINK_HASH_RE = re.compile(r'safelink_redirect=([A-Za-z0-9_\-%./=]+)')
+CAPTCHA_WALL_RE = re.compile(r'"enable_captcha"\s*:\s*"yes"|"captcha_shortlink"\s*:\s*"yes"', re.I)
+
+
+def solve_reveal_page(reveal_body, reveal_url, ua):
+    form = re.search(r'<form[^>]*action="([^"]+)"', reveal_body)
+    csrf = re.search(r'name="_csrfToken"[^>]*value="([^"]+)"', reveal_body)
+    adf = re.search(r'name="ad_form_data"[^>]*value="([^"]+)"', reveal_body)
+    tf = re.search(r'name="_Token\[fields\]"[^>]*value="([^"]+)"', reveal_body)
+    tu = re.search(r'name="_Token\[unlocked\]"[^>]*value="([^"]+)"', reveal_body)
+    if not (form and csrf and adf and tf and tu):
+        return None
+    action = urljoin(reveal_url, form.group(1))
+    payload = urllib.parse.urlencode(
+        [
+            ("_method", "POST"),
+            ("_csrfToken", csrf.group(1)),
+            ("ad_form_data", adf.group(1)),
+            ("_Token[fields]", tf.group(1)),
+            ("_Token[unlocked]", tu.group(1)),
+        ]
+    )
+    try:
+        resp = fetch(action, ua=ua, referer=reveal_url, data=payload, xrh=True)
+        data = json.loads(resp.read(262144).decode("utf-8", errors="replace"))
+        if data.get("url"):
+            return data["url"]
+    except (urllib.error.URLError, TimeoutError, OSError, urllib.error.HTTPError, ValueError):
+        return None
+    return None
 
 
 def walk_safelink(safelink_url, referer, ua, wait_sec):
@@ -531,23 +560,26 @@ def resolve(entry_url):
             if nxt:
                 if nxt.get("safelink"):
                     reveal_body, reveal_url, cap = walk_safelink(nxt["safelink"], current, UA_ROTATION[0], 26)
-                    if cap:
-                        chain.append((current, "safelink"))
-                        chain.append((reveal_url or nxt["safelink"], "captcha-wall"))
-                        log("captcha wall at {}".format(reveal_url or nxt["safelink"]))
-                        return chain, "captcha wall", mediafire_links
                     if reveal_body:
-                        log("safelink hash revealed ({} bytes)".format(len(reveal_body)))
+                        dest = solve_reveal_page(reveal_body, reveal_url or nxt["safelink"], UA_ROTATION[0])
+                        if dest:
+                            log("reveal solved: {}".format(dest))
+                            chain.append((current, "safelink"))
+                            chain.append((reveal_url or nxt["safelink"], "reveal"))
+                            current = dest
+                            reason = "page"
+                            continue
+                        if cap:
+                            chain.append((current, "safelink"))
+                            chain.append((reveal_url or nxt["safelink"], "captcha-wall"))
+                            log("captcha wall at {}".format(reveal_url or nxt["safelink"]))
+                            return chain, "captcha wall", mediafire_links
+                    if nxt.get("second_safelink_url"):
+                        log("safelink chain hop: {}".format(nxt["second_safelink_url"]))
                         chain.append((current, "safelink"))
-                        current = reveal_url or nxt["safelink"]
+                        current = nxt["second_safelink_url"]
                         reason = "page"
                         continue
-                if nxt.get("second_safelink_url"):
-                    log("safelink chain hop: {}".format(nxt["second_safelink_url"]))
-                    chain.append((current, "safelink"))
-                    current = nxt["second_safelink_url"]
-                    reason = "page"
-                    continue
         if 'id="landing"' in body and "form" in body.lower():
             gate_body = follow_landing_form(body, current, UA_ROTATION[0])
             if gate_body:
@@ -556,17 +588,20 @@ def resolve(entry_url):
                 if nxt:
                     if nxt.get("safelink"):
                         reveal_body, reveal_url, cap = walk_safelink(nxt["safelink"], current, UA_ROTATION[0], 26)
-                        if cap:
-                            chain.append((current, "safelink"))
-                            chain.append((reveal_url or nxt["safelink"], "captcha-wall"))
-                            log("captcha wall at {}".format(reveal_url or nxt["safelink"]))
-                            return chain, "captcha wall", mediafire_links
                         if reveal_body:
-                            log("safelink hash revealed ({} bytes)".format(len(reveal_body)))
-                            chain.append((current, "safelink"))
-                            current = reveal_url or nxt["safelink"]
-                            reason = "page"
-                            continue
+                            dest = solve_reveal_page(reveal_body, reveal_url or nxt["safelink"], UA_ROTATION[0])
+                            if dest:
+                                log("reveal solved: {}".format(dest))
+                                chain.append((current, "safelink"))
+                                chain.append((reveal_url or nxt["safelink"], "reveal"))
+                                current = dest
+                                reason = "page"
+                                continue
+                            if cap:
+                                chain.append((current, "safelink"))
+                                chain.append((reveal_url or nxt["safelink"], "captcha-wall"))
+                                log("captcha wall at {}".format(reveal_url or nxt["safelink"]))
+                                return chain, "captcha wall", mediafire_links
                     if nxt.get("second_safelink_url"):
                         log("safelink chain hop: {}".format(nxt["second_safelink_url"]))
                         chain.append((current, "safelink"))
