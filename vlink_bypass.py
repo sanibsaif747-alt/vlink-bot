@@ -397,6 +397,8 @@ def resolve(entry_url):
                 return chain, "mediafire", mediafire_links
             if "earnlinks" in urlparse(current).netloc:
                 return chain, "earnlinks gate failed", mediafire_links
+            if hop == 0 and any(h in urlparse(current).netloc for h in ("linksgo", "vplink")):
+                return chain, "shortener gate failed", mediafire_links
         try:
             resp = fetch(current)
         except urllib.error.HTTPError as e:
@@ -479,6 +481,18 @@ def send_message(chat_id, text):
 
 
 def build_reply(entry_url, chain, status, mediafire_links):
+    if status == "earnlinks gate failed":
+        return (
+            "Link gate: could not open\n\n" + entry_url + "\n\n"
+            "Server ne 'Bad Request' diya — link ka click budget khatam hai "
+            "(creator ki limit) ya server is IP ko block kar raha hai. "
+            "Fresh link bhejo."
+        )
+    if status == "shortener gate failed":
+        return (
+            "Link gate: could not open\n\n" + entry_url + "\n\n"
+            "Shortener ka solve fail hua — link spent/blocked hai. Fresh link bhejo."
+        )
     if status != "ok" and status != "mediafire":
         lines = ["Link gate: could not open", "", entry_url, "", status]
         return "\n".join(lines)
