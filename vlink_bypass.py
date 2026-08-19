@@ -536,6 +536,7 @@ def build_reply(entry_url, chain, status, mediafire_links):
 
 
 def browser_mode(url, wait=15, timeout=420):
+    hops = []
     try:
         proc = subprocess.run(
             [sys.executable, "/root/chain_walker.py", url, str(wait)],
@@ -545,20 +546,25 @@ def browser_mode(url, wait=15, timeout=420):
         )
         out = proc.stdout
         for line in out.splitlines():
+            if line.startswith("HOPURL: "):
+                hops.append(line.split("=", 1)[1].strip())
+            if line.startswith("SUMMARY_HOPS="):
+                hops = [h for h in line.split("=", 1)[1].split(",") if h]
+        for line in out.splitlines():
             if line.startswith("EARNLINKS_LINK="):
                 earn_url = line.split("=", 1)[1].strip()
                 log("browser found earnlinks: {}".format(earn_url))
                 chain, status, files = resolve_safe(earn_url)
                 if files:
-                    return files
+                    return files, hops
         for line in out.splitlines():
             if line.startswith("SUMMARY_FILES="):
                 raw = line.split("=", 1)[1].strip()
-                return [u for u in raw.split(",") if u]
-        return []
+                return [u for u in raw.split(",") if u], hops
+        return [], hops
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         log("browser mode failed: {}".format(type(e).__name__))
-        return []
+        return [], hops
 
 
 def handle_message(chat_id, text):
@@ -582,10 +588,24 @@ def handle_message(chat_id, text):
             log("fast scan clean for {} — browser mode on".format(host))
             if "vplink" in host:
                 send_message(chat_id, "Opening in browser… vplink ad-gate hai, isme 1-2 min lag sakte hain")
-                file_links = browser_mode(urls[0], timeout=120)
+                file_links, walker_hops = browser_mode(urls[0], timeout=120)
+                if file_links:
+                    chain, status = [(urls[0], "fast")], "mediafire"
+                else:
+                    log("vplink walker reached {} hops, no file".format(len(walker_hops)))
+                    reply = (
+                        "Chain yahan tak khola (bot ki poochh yahan hai):\n\n"
+                        + "\n".join("  {}. {}".format(i, u) for i, u in enumerate(walker_hops[:12], 1))
+                        + "\n\nAage Cloudflare Turnstile (CAPTCHA) gate hai jo bot ke liye band hai. "
+                        "Final step (1 min): link browser mein kholo -> CAPTCHA pass hoga -> jo bhi link khule "
+                        "(earnlinks/mediafire) usse yahan paste karo, main usse final file tak resolve kar dunga."
+                    )
+                    log("vplink walker reply: {} chars".format(len(reply)))
+                    send_message(chat_id, reply)
+                    return
             else:
                 send_message(chat_id, "Fast scan clean — browser mode on, loops ka wait hoga (10-60 sec)")
-                file_links = browser_mode(urls[0])
+                file_links, walker_hops = browser_mode(urls[0])
             if file_links:
                 chain, status = [(urls[0], "fast")], "mediafire"
     reply = build_reply(urls[0], chain, status, file_links)

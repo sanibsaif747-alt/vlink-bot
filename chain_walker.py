@@ -82,7 +82,7 @@ async def run(start_url, wait_seconds=15):
                 break
             seen.add(current)
             print("\n=== HOP {} ===".format(hop))
-            print("URL: " + current)
+            print("HOPURL: " + current)
             try:
                 await page.goto(current, wait_until="domcontentloaded", timeout=30000, referer=referer)
                 await asyncio.sleep(min(wait_seconds, 8))
@@ -144,6 +144,7 @@ async def run(start_url, wait_seconds=15):
         for u in network_urls[:30]:
             print(u)
         print("SUMMARY_FILES=" + ",".join(sorted(all_file_links)))
+        print("SUMMARY_HOPS=" + ",".join(seen))
         await browser.close()
 
 
