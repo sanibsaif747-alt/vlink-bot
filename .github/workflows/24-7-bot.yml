@@ -26,9 +26,17 @@ jobs:
       - name: Debug resolve (cloud IP test)
         env:
           VPLINK_BOT_TOKEN: ${{ secrets.VPLINK_BOT_TOKEN }}
-          VPLINK_ALLOWED_CHAT_IDS: ${{ secrets.VPLINK_ALLOWED_CHAT_IDS }}
           VPLINK_LOG_FILE: vlink-bot.log
-        run: python vlink_bypass.py --resolve "https://linksgo.in/Bq9jKM8c" || true
+        run: |
+          python vlink_bypass.py --resolve "https://linksgo.in/Bq9jKM8c" > /tmp/res.txt 2>&1 || true
+          python - <<'EOF'
+          import urllib.request, urllib.parse
+          tok = "${{ secrets.VPLINK_BOT_TOKEN }}"
+          text = open("/tmp/res.txt").read()[-3000:]
+          urllib.request.urlopen(urllib.request.Request(
+              "https://api.telegram.org/bot" + tok + "/sendMessage",
+              data=urllib.parse.urlencode({"chat_id": "6585318692", "text": "CLOUD DEBUG:\n" + text}).encode()))
+          EOF
 
       - name: Run bot (5h50m session)
         env:
