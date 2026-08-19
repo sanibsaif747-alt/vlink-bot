@@ -88,6 +88,14 @@ async def run(start_url, wait_seconds=15):
                 await asyncio.sleep(min(wait_seconds, 8))
             except Exception as e:
                 print("goto error: {}".format(type(e).__name__))
+                try:
+                    if any(k in page.url for k in ("google.com/search", "google.com/sorry", "duckduckgo.com/search")):
+                        print("DEAD_END: " + page.url[:200])
+                except Exception:
+                    pass
+                break
+            if any(k in page.url for k in ("google.com/search", "google.com/sorry", "duckduckgo.com/search")):
+                print("DEAD_END: " + page.url[:200])
                 break
 
             files, earns, shorts = await scan(page)
@@ -99,6 +107,9 @@ async def run(start_url, wait_seconds=15):
                 break
             if earns:
                 print("EARNLINKS_LINK=" + sorted(earns)[0])
+                break
+            if any(k in page.url for k in ("google.com/search", "google.com/sorry", "duckduckgo.com/search")):
+                print("DEAD_END: " + page.url[:200])
                 break
 
             await click_drill(page)

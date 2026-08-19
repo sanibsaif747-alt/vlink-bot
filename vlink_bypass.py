@@ -232,22 +232,33 @@ def earnlinks_post(url, csrf, adf, fields, unlocked, depth=0):
                         c.path, "TRUE" if c.secure else "FALSE",
                         str(int(c.expires)) if c.expires else "0", c.name, c.value,
                     ]) + "\n")
-            proc = subprocess.run(
-                [curl_bin, "-s", "-b", cj, "-c", cj,
-                 "--max-time", "15", "--connect-timeout", "8",
-                 "-A", UA_ROTATION[0],
-                 "-H", "Referer: " + url,
-                 "-H", "Origin: " + urljoin(url, "/")[:-1],
-                 "-H", "Content-Type: application/x-www-form-urlencoded",
-                 "-H", "X-Requested-With: XMLHttpRequest",
-                 "--data", payload,
-                 urljoin(url, "/links/go")],
-                capture_output=True,
-                text=True,
-                timeout=HTTP_TIMEOUT + 5,
-                start_new_session=True,
-            )
-            data = json.loads(proc.stdout)
+            data = None
+            for attempt in range(3):
+                proc = subprocess.run(
+                    [curl_bin, "-s", "-b", cj, "-c", cj,
+                     "--max-time", "15", "--connect-timeout", "8",
+                     "-A", UA_ROTATION[0],
+                     "-H", "Referer: " + url,
+                     "-H", "Origin: " + urljoin(url, "/")[:-1],
+                     "-H", "Content-Type: application/x-www-form-urlencoded",
+                     "-H", "X-Requested-With: XMLHttpRequest",
+                     "--data", payload,
+                     urljoin(url, "/links/go")],
+                    capture_output=True,
+                    text=True,
+                    timeout=HTTP_TIMEOUT + 5,
+                    start_new_session=True,
+                )
+                try:
+                    data = json.loads(proc.stdout)
+                    break
+                except ValueError:
+                    if attempt < 2:
+                        log("earnlinks POST attempt {} bad json — retrying".format(attempt + 1))
+                        time.sleep(2)
+                    else:
+                        log("earnlinks solve error: JSONDecodeError")
+                        return None
             try:
                 loaded = http.cookiejar.MozillaCookieJar(cj)
                 loaded.load(cj, ignore_discard=True, ignore_expires=True)
@@ -270,9 +281,9 @@ def earnlinks_post(url, csrf, adf, fields, unlocked, depth=0):
         if "earnlinks" in host or "linksgo" in host or "vplink" in host:
             if depth >= 5:
                 log("earnlinks recursion depth cap hit at {}".format(target))
-                return target
+                return None
             log("earnlinks chain hop: {}".format(target))
-            return try_shortener_solve(target, depth + 1) or target
+            return try_shortener_solve(target, depth + 1)
         if FILE_HOST_RE.search(target):
             log("earnlinks solved: {}".format(target))
         return target
@@ -306,9 +317,9 @@ def earnlinks_post(url, csrf, adf, fields, unlocked, depth=0):
     if "earnlinks" in host or "linksgo" in host or "vplink" in host:
         if depth >= 5:
             log("earnlinks recursion depth cap hit at {}".format(target))
-            return target
+            return None
         log("earnlinks chain hop: {}".format(target))
-        return try_shortener_solve(target, depth + 1) or target
+        return try_shortener_solve(target, depth + 1)
     if FILE_HOST_RE.search(target):
         log("earnlinks solved: {}".format(target))
     return target
@@ -338,6 +349,11 @@ def extract_target(url, body):
         if c.startswith("/"):
             return urljoin(url, c)
     return None
+
+
+def solve_shortener_host(url):
+    host = urlparse(url).netloc
+    return any(h in host for h in ("earnlinks", "linksgo", "vplink"))
 
 
 def normalize_url(u):
@@ -428,6 +444,15 @@ def resolve(entry_url):
             return chain, "mediafire", mediafire_links
         solved = solve_earnlinks(current, body, UA_ROTATION[0])
         if solved:
+            if FILE_HOST_RE.search(solved):
+                mediafire_links.add(solved)
+                chain.append((current, "mediafire"))
+                return chain, "mediafire", mediafire_links
+            if solve_shortener_host(solved):
+                chain.append((current, "hop"))
+                current = solved
+                reason = "page"
+                continue
             mediafire_links.add(solved)
             chain.append((current, "mediafire"))
             return chain, "mediafire", mediafire_links
