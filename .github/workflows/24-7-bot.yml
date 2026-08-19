@@ -1,0 +1,30 @@
+name: 24-7 bot
+
+on:
+  schedule:
+    - cron: "20 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install curl
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq curl
+
+      - name: Run bot (5h50m session)
+        env:
+          VPLINK_BOT_TOKEN: ${{ secrets.VPLINK_BOT_TOKEN }}
+          VPLINK_ALLOWED_CHAT_IDS: ${{ secrets.VPLINK_ALLOWED_CHAT_IDS }}
+        run: timeout 350m python vlink_bypass.py
