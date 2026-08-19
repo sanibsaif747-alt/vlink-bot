@@ -15,7 +15,7 @@ from urllib.parse import urljoin, urlparse
 
 BOT_TOKEN = os.environ.get("VPLINK_BOT_TOKEN", "")
 DEBUG = os.environ.get("VPLINK_DEBUG", "") == "1"
-LOG_FILE = "/root/vlink-bot.log"
+LOG_FILE = os.environ.get("VPLINK_LOG_FILE", "/root/vlink-bot.log")
 
 
 def log(msg):
