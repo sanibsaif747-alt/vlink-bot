@@ -419,7 +419,26 @@ def extract_safelink_next(body):
         dec = json.loads(base64.b64decode(urllib.parse.unquote(m2.group(1)) + "=="))
     except Exception:
         return None
-    return dec.get("second_safelink_url") or None
+    out = {}
+    if dec.get("safelink"):
+        out["safelink"] = dec["safelink"]
+    if dec.get("second_safelink_url"):
+        out["second_safelink_url"] = dec["second_safelink_url"]
+    return out or None
+
+
+CAPTCHA_WALL_RE = re.compile(r'ad_form_data|_csrfToken|/links/go|captcha_namespace', re.I)
+SAFELINK_HASH_RE = re.compile(r'safelink_redirect=([A-Za-z0-9_\-%./=]+)')
+
+
+def walk_safelink(safelink_url, referer, ua, wait_sec):
+    time.sleep(wait_sec)
+    try:
+        resp = fetch(safelink_url, ua=ua, referer=referer)
+        body = resp.read(262144).decode("utf-8", errors="replace")
+        return body, resp.url, bool(CAPTCHA_WALL_RE.search(body))
+    except (urllib.error.URLError, TimeoutError, OSError, urllib.error.HTTPError):
+        return None, None, False
 
 
 def follow_landing_form(body, url, mobile_ua):
@@ -510,21 +529,54 @@ def resolve(entry_url):
         if "new wpsafelink" in body.lower() or "new_wpsafelink" in body.lower() or 'name="newwpsafelink"' in body:
             nxt = extract_safelink_next(body)
             if nxt:
-                log("safelink chain hop: {}".format(nxt))
-                chain.append((current, "safelink"))
-                current = nxt
-                reason = "page"
-                continue
+                if nxt.get("safelink"):
+                    reveal_body, reveal_url, cap = walk_safelink(nxt["safelink"], current, UA_ROTATION[0], 26)
+                    if cap:
+                        chain.append((current, "safelink"))
+                        chain.append((reveal_url or nxt["safelink"], "captcha-wall"))
+                        log("captcha wall at {}".format(reveal_url or nxt["safelink"]))
+                        return chain, "captcha wall", mediafire_links
+                    if reveal_body:
+                        log("safelink hash revealed ({} bytes)".format(len(reveal_body)))
+                        chain.append((current, "safelink"))
+                        current = reveal_url or nxt["safelink"]
+                        reason = "page"
+                        continue
+                if nxt.get("second_safelink_url"):
+                    log("safelink chain hop: {}".format(nxt["second_safelink_url"]))
+                    chain.append((current, "safelink"))
+                    current = nxt["second_safelink_url"]
+                    reason = "page"
+                    continue
         if 'id="landing"' in body and "form" in body.lower():
             gate_body = follow_landing_form(body, current, UA_ROTATION[0])
             if gate_body:
                 log("adlinkfly landing form followed ({} bytes)".format(len(gate_body)))
                 nxt = extract_safelink_next(gate_body)
                 if nxt:
-                    chain.append((current, "safelink"))
-                    current = nxt
-                    reason = "page"
-                    continue
+                    if nxt.get("safelink"):
+                        reveal_body, reveal_url, cap = walk_safelink(nxt["safelink"], current, UA_ROTATION[0], 26)
+                        if cap:
+                            chain.append((current, "safelink"))
+                            chain.append((reveal_url or nxt["safelink"], "captcha-wall"))
+                            log("captcha wall at {}".format(reveal_url or nxt["safelink"]))
+                            return chain, "captcha wall", mediafire_links
+                        if reveal_body:
+                            log("safelink hash revealed ({} bytes)".format(len(reveal_body)))
+                            chain.append((current, "safelink"))
+                            current = reveal_url or nxt["safelink"]
+                            reason = "page"
+                            continue
+                    if nxt.get("second_safelink_url"):
+                        log("safelink chain hop: {}".format(nxt["second_safelink_url"]))
+                        chain.append((current, "safelink"))
+                        current = nxt["second_safelink_url"]
+                        reason = "page"
+                        continue
+        if CAPTCHA_WALL_RE.search(body) and ("form" in body.lower() or "captcha" in body.lower()):
+            chain.append((current, "captcha-wall"))
+            log("captcha wall detected at {}".format(current))
+            return chain, "captcha wall", mediafire_links
         chain.append((current, "final"))
         return chain, "ok", mediafire_links
     return chain, "hop limit reached", mediafire_links
@@ -583,6 +635,15 @@ def build_reply(entry_url, chain, status, mediafire_links):
         return (
             "Link gate: could not open\n\n" + entry_url + "\n\n"
             "Shortener ka solve fail hua — link spent/blocked hai. Fresh link bhejo."
+        )
+    if status == "captcha wall":
+        return (
+            "Link gate: CAPTCHA wall\n\n" + entry_url + "\n\n"
+            "Bot ne chain poora walk kiya (adlinkfly gate + 25s wait + safelink reveal) — "
+            "lekin aakhri step par ad-copy CAPTCHA hai (insaan ko image match karna padta hai, "
+            "ye ads se paisa kamane ka tareeka hai). Bot isse automate nahi kar sakta.\n\n"
+            "Hops ({}):".format(len(chain))
+            + "".join("\n  {}. {}  [{}]".format(i, h, w) for i, (h, w) in enumerate(chain, 1))
         )
     if status != "ok" and status != "mediafire":
         lines = ["Link gate: could not open", "", entry_url, "", status]
