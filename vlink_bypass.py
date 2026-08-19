@@ -27,6 +27,10 @@ def log(msg):
         pass
     with open(LOG_FILE, "a", encoding="utf-8") as fh:
         fh.write(line + "\n")
+    try:
+        print(line, flush=True)
+    except (OSError, ValueError):
+        pass
 ALLOWED_CHAT_IDS = {
     int(i) for i in os.environ.get("VPLINK_ALLOWED_CHAT_IDS", "").split(",") if i.strip()
 }
