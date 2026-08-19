@@ -27,4 +27,5 @@ jobs:
         env:
           VPLINK_BOT_TOKEN: ${{ secrets.VPLINK_BOT_TOKEN }}
           VPLINK_ALLOWED_CHAT_IDS: ${{ secrets.VPLINK_ALLOWED_CHAT_IDS }}
+          VPLINK_LOG_FILE: vlink-bot.log
         run: timeout 350m python vlink_bypass.py
