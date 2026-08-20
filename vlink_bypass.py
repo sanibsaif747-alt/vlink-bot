@@ -91,6 +91,45 @@ def get_opener():
     return _opener
 
 
+RESULT_CACHE_FILE = "/root/.vlink_result_cache.json"
+_result_cache = {}
+_CACHE_TTL = 6 * 3600
+
+
+def _cache_load():
+    global _result_cache
+    try:
+        with open(RESULT_CACHE_FILE) as fh:
+            _result_cache = json.load(fh)
+    except (OSError, ValueError):
+        _result_cache = {}
+
+
+def _cache_save():
+    try:
+        with open(RESULT_CACHE_FILE, "w") as fh:
+            json.dump(_result_cache, fh)
+    except OSError:
+        pass
+
+
+def cache_get(url):
+    hit = _result_cache.get(url)
+    if hit and time.time() - hit["t"] < _CACHE_TTL:
+        return hit["chain"], hit["status"], set(hit["mf"])
+    return None
+
+
+def cache_set(url, chain, status, mf):
+    _result_cache[url] = {
+        "t": time.time(),
+        "chain": chain,
+        "status": status,
+        "mf": sorted(mf),
+    }
+    _cache_save()
+
+
 def save_session():
     try:
         cookies = [
@@ -461,13 +500,18 @@ def solve_reveal_page(reveal_body, reveal_url, ua):
 
 
 def walk_safelink(safelink_url, referer, ua, wait_sec):
-    time.sleep(wait_sec)
-    try:
-        resp = fetch(safelink_url, ua=ua, referer=referer)
-        body = resp.read(262144).decode("utf-8", errors="replace")
-        return body, resp.url, bool(CAPTCHA_WALL_RE.search(body))
-    except (urllib.error.URLError, TimeoutError, OSError, urllib.error.HTTPError):
-        return None, None, False
+    polled = 0
+    while polled <= wait_sec + 8:
+        time.sleep(2)
+        polled += 2
+        try:
+            resp = fetch(safelink_url, ua=ua, referer=referer)
+            body = resp.read(262144).decode("utf-8", errors="replace")
+            if "Too Early" not in body:
+                return body, resp.url, bool(CAPTCHA_WALL_RE.search(body))
+        except (urllib.error.URLError, TimeoutError, OSError, urllib.error.HTTPError):
+            pass
+    return None, None, False
 
 
 def follow_landing_form(body, url, mobile_ua):
@@ -619,7 +663,12 @@ def resolve(entry_url):
 
 def resolve_safe(entry_url):
     try:
+        cached = cache_get(entry_url)
+        if cached:
+            return cached[0], cached[1] + " (cached)", cached[2]
         chain, status, mf = resolve(entry_url)
+        if status in ("ok", "mediafire"):
+            cache_set(entry_url, chain, status, mf)
         return chain, status, mf
     except Exception as e:
         return [(entry_url, "fatal")], "unhandled: {}".format(type(e).__name__), set()
@@ -652,6 +701,7 @@ def send_message(chat_id, text):
 
 def build_reply(entry_url, chain, status, mediafire_links):
     host = urlparse(entry_url).netloc
+    status = status.replace(" (cached)", "")
     if status == "shortener gate failed" and "vplink" in host:
         return (
             "Link gate: could not open\n\n" + entry_url + "\n\n"
@@ -826,9 +876,12 @@ def poll_forever():
 
 
 def main():
+    _cache_load()
     if len(sys.argv) >= 3 and sys.argv[1] == "--resolve":
+        _t0 = time.time()
         chain, status, mediafire_links = resolve_safe(sys.argv[2])
         print(build_reply(sys.argv[2], chain, status, mediafire_links))
+        print("TIME: {:.1f}s".format(time.time() - _t0))
         return
     if not BOT_TOKEN:
         print("VPLINK_BOT_TOKEN env var required (or use: {} --resolve <url>)".format(sys.argv[0]))
